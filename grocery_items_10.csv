@@ -1,0 +1,11 @@
+name,category,unit,cost_price,selling_price,shelf_life_days,stock,safety_stock,restock_days
+Rice,Grains,kg,45,55,180,120,30,10
+Wheat Flour,Grains,kg,38,48,120,90,25,7
+Toor Dal,Pulses,kg,95,115,150,60,15,10
+Sugar,Staples,kg,42,50,365,100,20,14
+Sunflower Oil,Oil,liter,120,145,270,70,20,7
+Milk,Dairy,liter,48,56,3,40,12,1
+Eggs,Poultry,dozen,62,75,10,35,10,2
+Bread,Bakery,loaf,28,35,4,25,8,1
+Banana,Fruits,kg,24,35,5,45,12,2
+Tomato,Vegetables,kg,22,32,6,50,15,2

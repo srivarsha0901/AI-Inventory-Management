@@ -1,0 +1,30 @@
+.env
+# Environment
+.venv/
+venv/
+env/
+
+# Python cache/compiled
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local app/runtime files
+instance/
+*.log
+logs/
+
+# Local databases (if used)
+*.db
+*.sqlite3
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

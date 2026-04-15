@@ -1,0 +1,12 @@
+flask
+flask-cors
+pymongo[srv]
+pyjwt
+werkzeug
+python-dotenv
+pandas
+openpyxl
+pytz
+Pillow
+pytesseract
+pdfplumber

@@ -1,0 +1,26 @@
+# Python / Flask
+__pycache__/
+*.py[cod]
+.env
+.venv/
+venv/
+env/
+*.log
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# ML artifacts / large datasets
+inventory-ai/data/raw/
+inventory-ai/data/processed/
+inventory-ai/data/predictions/
+inventory-ai/catboost_info/
+inventory-ai/models/*.pkl
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
