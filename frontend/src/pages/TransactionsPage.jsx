@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { useLocation } from 'react-router-dom'
 import { useApi } from '../hooks/useApi'
 import { posService } from '../services/apiServices'
 import { Card, CardHeader } from '../components/ui/Card'
@@ -6,8 +7,32 @@ import Badge  from '../components/ui/Badge'
 import LoadingSpinner from '../components/ui/LoadingSpinner'
 
 export default function TransactionsPage() {
+  const location = useLocation()
   const [page, setPage] = useState(1)
-  const { data, loading } = useApi(() => posService.getSales({ page, per_page: 20 }), null, [page])
+  const { data, loading, refetch } = useApi(
+    () => posService.getSales({ page, per_page: 20 }),
+    null,
+    [page, location.pathname],
+  )
+
+  useEffect(() => {
+    refetch()
+  }, [location.pathname, refetch])
+
+  useEffect(() => {
+    const onSalesUpdated = () => refetch()
+    window.addEventListener('storage', onSalesUpdated)
+    const interval = setInterval(() => {
+      if (sessionStorage.getItem('ft_sales_updated')) {
+        sessionStorage.removeItem('ft_sales_updated')
+        refetch()
+      }
+    }, 1500)
+    return () => {
+      window.removeEventListener('storage', onSalesUpdated)
+      clearInterval(interval)
+    }
+  }, [refetch])
 
   const sales = data?.data  || []
   const total = data?.total || 0

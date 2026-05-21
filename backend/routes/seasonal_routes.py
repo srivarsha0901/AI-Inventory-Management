@@ -5,15 +5,40 @@ from datetime import datetime, timezone
 
 seasonal_bp = Blueprint("seasonal", __name__)
 
-INDIAN_FESTIVALS = [
-    { "name": "Diwali",     "month": 10, "boost_categories": ["Sweets","Snacks","Oils","Beverages"], "multiplier": 1.8 },
-    { "name": "Christmas",  "month": 12, "boost_categories": ["Bakery","Beverages","Dairy","Eggs"],  "multiplier": 1.6 },
-    { "name": "Holi",       "month": 3,  "boost_categories": ["Beverages","Dairy","Snacks"],         "multiplier": 1.4 },
-    { "name": "Eid",        "month": 4,  "boost_categories": ["Grains","Dairy","Oils"],              "multiplier": 1.5 },
-    { "name": "Pongal",     "month": 1,  "boost_categories": ["Grains","Dairy","Vegetables"],        "multiplier": 1.4 },
-    { "name": "Navratri",   "month": 10, "boost_categories": ["Dairy","Fruits","Grains"],            "multiplier": 1.3 },
-    { "name": "New Year",   "month": 1,  "boost_categories": ["Beverages","Bakery","Snacks"],        "multiplier": 1.5 },
-]
+import holidays
+from datetime import timedelta
+
+HOLIDAY_BOOSTS = {
+    "diwali": {"boost_categories": ["Sweets","Snacks","Oils","Beverages","Dairy"], "multiplier": 1.5},
+    "holi": {"boost_categories": ["Beverages","Dairy","Snacks"], "multiplier": 1.4},
+    "christmas": {"boost_categories": ["Bakery","Beverages","Dairy","Eggs"], "multiplier": 1.4},
+    "eid": {"boost_categories": ["Grains","Dairy","Oils"], "multiplier": 1.4},
+    "new year": {"boost_categories": ["Beverages","Bakery","Snacks"], "multiplier": 1.3},
+    "independence day": {"boost_categories": ["Snacks","Beverages"], "multiplier": 1.2},
+    "republic day": {"boost_categories": ["Snacks","Beverages"], "multiplier": 1.2},
+}
+
+def get_indian_festivals(year):
+    ind_holidays = holidays.India(years=year)
+    festivals = []
+    for dt, name in sorted(ind_holidays.items()):
+        boost_cats = []
+        mult = 1.0
+        for k, v in HOLIDAY_BOOSTS.items():
+            if k in name.lower():
+                boost_cats = v["boost_categories"]
+                mult = v["multiplier"]
+                break
+        if boost_cats:
+            # We must serialize datetime to ISO string or remove it if not needed,
+            # but seasonal_routes expects 'month' 
+            festivals.append({
+                "name": name,
+                "month": dt.month,
+                "boost_categories": boost_cats,
+                "multiplier": mult
+            })
+    return festivals
 
 @seasonal_bp.route("/seasonal/upcoming", methods=["GET"])
 @jwt_required
@@ -22,8 +47,9 @@ def get_upcoming_festivals():
     current_month = now.month
     next_month    = (current_month % 12) + 1
 
+    fests = get_indian_festivals(now.year)
     upcoming = [
-        f for f in INDIAN_FESTIVALS
+        f for f in fests
         if f["month"] in [current_month, next_month]
     ]
 
@@ -41,7 +67,8 @@ def apply_seasonal_boost():
         now      = datetime.now(timezone.utc)
 
         # Find the festival
-        fest = next((f for f in INDIAN_FESTIVALS if f["name"] == festival), None)
+        fests = get_indian_festivals(now.year)
+        fest = next((f for f in fests if f["name"] == festival), None)
         if not fest:
             return jsonify({"message": "Festival not found"}), 404
 
@@ -203,8 +230,9 @@ def get_seasonal_suggestions():
                     })
 
         # Upcoming festivals
+        fests = get_indian_festivals(now.year)
         upcoming_festivals = [
-            f for f in INDIAN_FESTIVALS
+            f for f in fests
             if f["month"] in [month, next_month]
         ]
 
@@ -234,7 +262,8 @@ def get_notifications():
         notifications = []
 
         # 1. Upcoming festival alerts
-        for fest in INDIAN_FESTIVALS:
+        fests = get_indian_festivals(now.year)
+        for fest in fests:
             if fest["month"] == month:
                 notifications.append({
                     "type":     "festival",

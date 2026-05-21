@@ -12,6 +12,112 @@ const MOCK_EXTRACTED = [
   { id:5, name:'Bananas',        qty:30,  unit:'dozens',price:38,  total:1140, confirmed:true },
 ]
 
+// ── Manual Entry Component ──
+function ManualEntryForm({ items, setItems, onConfirm, saving }) {
+  const [name, setName] = useState('')
+  const [qty, setQty] = useState('')
+  const [unit, setUnit] = useState('kg')
+  const [price, setPrice] = useState('')
+
+  const addItem = () => {
+    if (!name || !qty || !price) {
+      alert('Please fill in all fields')
+      return
+    }
+    const newItem = {
+      id: items.length + 1,
+      name,
+      qty: parseFloat(qty),
+      unit,
+      price: parseFloat(price),
+      total: parseFloat(qty) * parseFloat(price),
+      confirmed: true,
+    }
+    setItems([...items, newItem])
+    setName('')
+    setQty('')
+    setUnit('kg')
+    setPrice('')
+  }
+
+  const removeItem = (id) => {
+    setItems(items.filter(i => i.id !== id))
+  }
+
+  return (
+    <CardBody className="space-y-4">
+      <div className="bg-blue-50 border border-blue-200 rounded-[10px] p-4 text-[0.85rem]">
+        📋 <strong>No items detected by OCR</strong> — Manually enter your items below
+      </div>
+
+      {/* Input form */}
+      <div className="grid grid-cols-4 gap-3 border-b border-[var(--border)] pb-4">
+        <input 
+          type="text" placeholder="Product name" value={name}
+          onChange={e => setName(e.target.value)}
+          className="px-3 py-2 border border-[var(--border)] rounded-[8px] text-[0.85rem]"
+        />
+        <input 
+          type="number" placeholder="Qty" value={qty}
+          onChange={e => setQty(e.target.value)}
+          className="px-3 py-2 border border-[var(--border)] rounded-[8px] text-[0.85rem]"
+        />
+        <select value={unit} onChange={e => setUnit(e.target.value)}
+                className="px-3 py-2 border border-[var(--border)] rounded-[8px] text-[0.85rem]">
+          <option>kg</option>
+          <option>L</option>
+          <option>pcs</option>
+          <option>dozen</option>
+          <option>boxes</option>
+          <option>units</option>
+        </select>
+        <input 
+          type="number" placeholder="Price" value={price}
+          onChange={e => setPrice(e.target.value)}
+          className="px-3 py-2 border border-[var(--border)] rounded-[8px] text-[0.85rem]"
+        />
+      </div>
+      <Button size="sm" onClick={addItem}>+ Add Item</Button>
+
+      {/* Items list */}
+      {items.length > 0 && (
+        <>
+          <table className="w-full border-collapse">
+            <thead>
+              <tr>
+                {['Item','Qty','Unit','Price','Total',''].map((h) => (
+                  <th key={h} className="px-3 py-2 text-left text-[0.67rem] font-bold text-[var(--muted)] border-b">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((it) => (
+                <tr key={it.id} className="border-b hover:bg-[var(--cream)]">
+                  <td className="px-3 py-2 text-[0.85rem]">{it.name}</td>
+                  <td className="px-3 py-2 text-[0.85rem]">{it.qty}</td>
+                  <td className="px-3 py-2 text-[0.85rem]">{it.unit}</td>
+                  <td className="px-3 py-2 text-[0.85rem]">₹{it.price}</td>
+                  <td className="px-3 py-2 text-[0.85rem] font-bold">₹{it.total.toLocaleString('en-IN')}</td>
+                  <td className="px-3 py-2 text-right">
+                    <button onClick={() => removeItem(it.id)} className="text-red-500 hover:text-red-700 text-[0.8rem]">✕</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="flex items-center justify-between">
+            <span className="text-[0.85rem]">Total: <strong className="text-[var(--teal)]">₹{items.reduce((s,i)=>s+i.total,0).toLocaleString('en-IN')}</strong></span>
+            <div className="flex gap-2">
+              <Button variant="outline" size="sm" onClick={() => setItems([])}>Clear All</Button>
+              <Button size="sm" onClick={() => onConfirm()} loading={saving}>Confirm & Update</Button>
+            </div>
+          </div>
+        </>
+      )}
+    </CardBody>
+  )
+}
+
 export default function OCRPage() {
   const fileRef = useRef(null)
 
@@ -22,10 +128,11 @@ export default function OCRPage() {
   const [saving,    setSaving]    = useState(false)
   const [invoiceId, setInvoiceId] = useState(null)
   const [history,   setHistory]   = useState([])
+  const [error,     setError]     = useState('')
+  const [mode,      setMode]      = useState('sale')
 
-  // Load real history from backend
-  useEffect(() => {
-    ocrService.getHistory()
+  const loadHistory = () => {
+    return ocrService.getHistory()
       .then(res => {
         const data = res.data?.data || []
         setHistory(data.map((h, i) => ({
@@ -35,24 +142,38 @@ export default function OCRPage() {
           items:    h.item_count || 0,
           total:    `₹${(h.total_amount || 0).toLocaleString('en-IN')}`,
           status:   h.status || 'pending',
+          type:     h.document_type || 'customer_bill',
         })))
       })
       .catch(() => {})
+  }
+
+  // Load real history from backend
+  useEffect(() => {
+    loadHistory()
   }, [stage]) // re-fetch when stage changes (i.e., after confirming)
 
   const handleFile = async (file) => {
     if (!file) return
     setFileName(file.name)
     setStage('processing')
+    setError('')
     const formData = new FormData()
     formData.append('invoice', file)
+    formData.append('mode', mode === 'receive' ? 'supplier_invoice' : 'customer_bill')
     try {
       const res = await ocrService.uploadInvoice(formData)
-      setItems(res.data?.items || MOCK_EXTRACTED)
+      const extractedItems = res.data?.items || []
+      setItems(extractedItems)
       setInvoiceId(res.data?.id || 'latest')
-    } catch {
-      setItems(MOCK_EXTRACTED) // fallback mock
+      if (!extractedItems.length) {
+        setError(res.data?.message || 'No items were detected. Add them manually below.')
+      }
+      loadHistory()
+    } catch (err) {
+      setItems([])
       setInvoiceId('latest')
+      setError(err?.response?.data?.message || 'OCR upload failed. Add items manually below.')
     }
     setTimeout(() => setStage('review'), 1500)
   }
@@ -69,18 +190,21 @@ export default function OCRPage() {
 
   const handleConfirm = async () => {
     setSaving(true)
-    try { await ocrService.confirmItems(invoiceId || 'latest', { items: items.filter(i => i.confirmed) }) }
+    try {
+      await ocrService.confirmItems(invoiceId || 'latest', { mode, items: items.filter(i => i.confirmed) })
+      loadHistory()
+    }
     catch {}
     setTimeout(() => { setSaving(false); setStage('done') }, 1200)
   }
 
-  const reset = () => { setStage('upload'); setFileName(''); setItems([]) }
+  const reset = () => { setStage('upload'); setFileName(''); setItems([]); setError('') }
 
   return (
     <div className="space-y-5">
 
       <div>
-        <h2 className="font-display font-bold text-[1.3rem] text-[var(--ink)]">OCR Invoice Processor</h2>
+        <h2 className="font-display font-bold text-[1.3rem] text-[var(--ink)]">OCR Bill Processor</h2>
         <p className="text-[0.82rem] text-[var(--muted)] mt-0.5">
           Upload a supplier invoice image — AI extracts items and updates inventory automatically
         </p>
@@ -95,6 +219,22 @@ export default function OCRPage() {
           {stage === 'upload' && (
             <Card>
               <CardBody>
+                <div className="flex gap-2 mb-4">
+                  <button
+                    type="button"
+                    onClick={() => setMode('sale')}
+                    className={`px-3 py-2 rounded-[8px] border text-[0.82rem] font-semibold ${mode === 'sale' ? 'bg-[var(--teal)] text-white border-[var(--teal)]' : 'bg-white border-[var(--border)] text-[var(--ink)]'}`}
+                  >
+                    Customer bill - reduce stock
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMode('receive')}
+                    className={`px-3 py-2 rounded-[8px] border text-[0.82rem] font-semibold ${mode === 'receive' ? 'bg-[var(--teal)] text-white border-[var(--teal)]' : 'bg-white border-[var(--border)] text-[var(--ink)]'}`}
+                  >
+                    Supplier invoice - add stock
+                  </button>
+                </div>
                 <div
                   onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
                   onDragLeave={() => setDragOver(false)}
@@ -107,7 +247,7 @@ export default function OCRPage() {
                 >
                   <div className="text-4xl mb-3">🧾</div>
                   <p className="font-bold text-[0.95rem] text-[var(--ink)] mb-1">
-                    Drop your supplier invoice here
+                    Drop your {mode === 'sale' ? 'customer bill' : 'supplier invoice'} here
                   </p>
                   <p className="text-[0.82rem] text-[var(--muted)] mb-4">
                     Supports JPG, PNG, PDF · Max 10MB
@@ -154,10 +294,22 @@ export default function OCRPage() {
               {stage === 'done' ? (
                 <CardBody className="text-center py-10">
                   <p className="text-[0.9rem] text-[var(--muted)] mb-5">
-                    {items.filter(i=>i.confirmed).length} items added to inventory successfully.
+                    {items.filter(i=>i.confirmed).length} items {mode === 'sale' ? 'sold from inventory' : 'added to inventory'} successfully.
                   </p>
                   <Button variant="outline" onClick={reset}>Process another invoice</Button>
                 </CardBody>
+              ) : items.length === 0 ? (
+                // ── Manual Entry Form (when OCR extraction returns nothing) ──
+                <>
+                  {error && (
+                    <CardBody>
+                      <div className="bg-red-50 border border-red-200 rounded-[10px] p-4 text-[0.85rem] text-red-700">
+                        {error}
+                      </div>
+                    </CardBody>
+                  )}
+                  <ManualEntryForm items={items} setItems={setItems} onConfirm={handleConfirm} saving={saving} />
+                </>
               ) : (
                 <>
                   <table className="w-full border-collapse">
@@ -198,7 +350,7 @@ export default function OCRPage() {
                     <div className="flex gap-2">
                       <Button variant="outline" size="sm" onClick={reset}>Cancel</Button>
                       <Button size="sm" onClick={handleConfirm} loading={saving}>
-                        Confirm &amp; Update Inventory
+                        {mode === 'sale' ? 'Confirm Sale & Reduce Stock' : 'Confirm & Add Stock'}
                       </Button>
                     </div>
                   </div>

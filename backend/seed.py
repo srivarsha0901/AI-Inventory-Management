@@ -70,6 +70,8 @@ def _seed_products_and_inventory(db, store_id=None):
             "predicted_sales": predicted,
             "safety_stock": safety,
             "reorder_point": reorder_pt,
+            "cost_price": cost_price,
+            "selling_price": selling_price,
             "stock_status": status,
             "last_updated": now,
         }

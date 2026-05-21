@@ -1,6 +1,10 @@
+import os
+# ── Fix PyTorch DLL loading on Windows (must be set before torch import) ──
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+os.environ["OMP_NUM_THREADS"] = "1"
+
 from flask import Flask, jsonify, request
 from dotenv import load_dotenv
-import os
 from datetime import timedelta
 
 load_dotenv()
@@ -8,14 +12,29 @@ load_dotenv()
 app = Flask(__name__)
 app.config["MONGO_URI"]                = os.getenv("MONGO_URI", "mongodb://localhost:27017/freshtrack")
 app.config["MONGO_DB_NAME"]           = os.getenv("MONGO_DB_NAME", "freshtrack")
-app.config["JWT_SECRET_KEY"]          = os.getenv("JWT_SECRET_KEY", "change-this")
+app.config["JWT_SECRET_KEY"]          = os.getenv("JWT_SECRET_KEY", "dev-only-change-me")
 app.config["JWT_ALGORITHM"]           = "HS256"
 app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=24)
+app.config["CORS_ORIGINS"]            = [
+    origin.strip()
+    for origin in os.getenv(
+        "CORS_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173,"
+        "http://localhost:5174,http://127.0.0.1:5174",
+    ).split(",")
+    if origin.strip()
+]
+
+if os.getenv("FLASK_ENV", "production") == "production" and not os.getenv("JWT_SECRET_KEY"):
+    print("WARNING: JWT_SECRET_KEY is not set. Using a development fallback secret.")
 
 # ✅ ADD CORS HEADERS TO ALL RESPONSES
 @app.after_request
 def after_request(response):
-    response.headers['Access-Control-Allow-Origin'] = '*'
+    origin = request.headers.get("Origin")
+    if origin in app.config["CORS_ORIGINS"]:
+        response.headers['Access-Control-Allow-Origin'] = origin
+        response.headers['Vary'] = 'Origin'
     response.headers['Access-Control-Allow-Methods'] = 'GET,POST,PUT,DELETE,OPTIONS'
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type,Authorization'
     return response
@@ -89,7 +108,9 @@ from routes.onboarding_routes import onboarding_bp
 from routes.pos_routes import pos_bp
 from routes.seasonal_routes import seasonal_bp
 from routes.ocr_routes import ocr_bp
+from routes.event_routes import events_bp
 app.register_blueprint(ocr_bp, url_prefix="/api")
+app.register_blueprint(events_bp, url_prefix="/api")
 app.register_blueprint(seasonal_bp, url_prefix="/api")
 app.register_blueprint(pos_bp, url_prefix="/api")
 app.register_blueprint(onboarding_bp, url_prefix="/api")

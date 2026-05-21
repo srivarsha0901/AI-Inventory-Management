@@ -29,7 +29,12 @@ export default function LoginPage() {
       login(res.data.user, res.data.token)
       navigate(res.data.user.role === 'manager' ? '/dashboard' : '/pos', { replace: true })
     } catch (err) {
-      setError(err.response?.data?.message || 'Invalid credentials. Please try again.')
+      const data = err.response?.data
+      if (!err.response) {
+        setError('Cannot reach server. Start the backend (python app.py) and refresh this page.')
+      } else {
+        setError(data?.message || data?.error || 'Invalid credentials. Please try again.')
+      }
     } finally {
       setLoading(false)
     }

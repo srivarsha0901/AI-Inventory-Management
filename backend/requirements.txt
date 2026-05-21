@@ -9,4 +9,8 @@ openpyxl
 pytz
 Pillow
 pytesseract
+paddleocr
+paddlepaddle
+rapidocr-onnxruntime
 pdfplumber
+holidays

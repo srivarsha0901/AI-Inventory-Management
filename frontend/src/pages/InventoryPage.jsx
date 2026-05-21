@@ -37,6 +37,11 @@ export default function InventoryPage() {
   const [editItem,    setEditItem]    = useState(null)
   const [editValues,  setEditValues]  = useState({})
   const [saving,      setSaving]      = useState(false)
+  const [showAdd,     setShowAdd]     = useState(false)
+  const [newItem,     setNewItem]     = useState({
+    name: '', category: 'General', unit: 'units', stock: '',
+    safety_stock: '10', cost_price: '', selling_price: '',
+  })
 
   const inventory = data?.data?.map((item) => ({
     id:       item.id,
@@ -96,6 +101,25 @@ export default function InventoryPage() {
     }
   }
 
+  const handleAdd = async () => {
+    if (!newItem.name.trim()) {
+      alert('Product name is required')
+      return
+    }
+    setSaving(true)
+    try {
+      await api.post('/onboarding/inventory', { items: [newItem] })
+      setNewItem({
+        name: '', category: 'General', unit: 'units', stock: '',
+        safety_stock: '10', cost_price: '', selling_price: '',
+      })
+      setShowAdd(false)
+      refetch()
+    } catch (err) {
+      alert(err.response?.data?.message || 'Failed to add product')
+    } finally { setSaving(false) }
+  }
+
   return (
     <div className="space-y-5">
 
@@ -153,7 +177,27 @@ export default function InventoryPage() {
           </select>
 
           <Button variant="outline" size="sm" onClick={refetch}>↻ Refresh</Button>
+          <Button size="sm" onClick={() => setShowAdd(v => !v)}>
+            {showAdd ? 'Close' : '+ Add Product'}
+          </Button>
         </div>
+        {showAdd && (
+          <div className="grid grid-cols-7 gap-2 px-5 pb-4">
+            <input value={newItem.name} onChange={e => setNewItem(p => ({ ...p, name: e.target.value }))}
+                   placeholder="Name" className="px-3 py-2 border border-[var(--border)] rounded-[8px] text-[0.82rem]" />
+            <input value={newItem.category} onChange={e => setNewItem(p => ({ ...p, category: e.target.value }))}
+                   placeholder="Category" className="px-3 py-2 border border-[var(--border)] rounded-[8px] text-[0.82rem]" />
+            <input value={newItem.unit} onChange={e => setNewItem(p => ({ ...p, unit: e.target.value }))}
+                   placeholder="Unit" className="px-3 py-2 border border-[var(--border)] rounded-[8px] text-[0.82rem]" />
+            <input type="number" value={newItem.stock} onChange={e => setNewItem(p => ({ ...p, stock: e.target.value }))}
+                   placeholder="Stock" className="px-3 py-2 border border-[var(--border)] rounded-[8px] text-[0.82rem]" />
+            <input type="number" value={newItem.safety_stock} onChange={e => setNewItem(p => ({ ...p, safety_stock: e.target.value }))}
+                   placeholder="Safety" className="px-3 py-2 border border-[var(--border)] rounded-[8px] text-[0.82rem]" />
+            <input type="number" value={newItem.selling_price} onChange={e => setNewItem(p => ({ ...p, selling_price: e.target.value }))}
+                   placeholder="Sell price" className="px-3 py-2 border border-[var(--border)] rounded-[8px] text-[0.82rem]" />
+            <Button size="sm" onClick={handleAdd} loading={saving}>Save</Button>
+          </div>
+        )}
       </Card>
 
       {/* Table */}

@@ -3,6 +3,12 @@
 import pandas as pd
 import numpy as np
 import os
+import sys
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
 
 # ================= CONFIG =================
 RAW_DEMAND_DIR = "data/raw/favorita/"
@@ -12,14 +18,33 @@ os.makedirs(OUT_DIR, exist_ok=True)
 
 # ================= LOAD DATA =================
 def load_data():
-    print("📥 Loading data...")
+    print("[1/5] Loading data...")
 
+    # ── Optimized dtypes to reduce memory usage ──
+    dtypes = {
+        "id": "int32",
+        "store_nbr": "int8",
+        "item_nbr": "int32",
+        "unit_sales": "float32",
+        "onpromotion": "object",
+    }
+
+    row_limit = os.getenv("ML_TRAIN_ROWS", "20000000").strip().lower()
+    row_limit = None if row_limit in {"", "all", "none"} else int(row_limit)
+
+    # Load 20M rows by default -- 13x more than the old 1.5M limit.
+    # The full 125M rows causes OOM during merge on machines with <16GB RAM.
+    # 20M rows covers many product/store combinations with enough history
+    # for lag features (28-day), rolling windows (30-day), and trend detection.
     train = pd.read_csv(
         os.path.join(RAW_DEMAND_DIR, "train.csv"),
         encoding="latin1",
         parse_dates=["date"],
-        nrows=1500000  # Increased from 500K to 1.5M (3x more data for better accuracy!)
+        dtype=dtypes,
+        nrows=row_limit,
     )
+
+    print(f"  Loaded {len(train):,} rows")
 
     items = pd.read_csv(os.path.join(RAW_DEMAND_DIR, "items.csv"), encoding="latin1")
     stores = pd.read_csv(os.path.join(RAW_DEMAND_DIR, "stores.csv"), encoding="latin1")
@@ -34,14 +59,14 @@ def load_data():
         parse_dates=["date"]
     )
 
-    print(f"✅ Train rows: {len(train)}")
+    print(f"[OK] Train rows: {len(train):,}")
 
     return train, items, stores, holidays, transactions
 
 
 # ================= CLEAN DATA =================
 def clean_data(train):
-    print("🧹 Cleaning data...")
+    print("[2/5] Cleaning data...")
 
     train["unit_sales"] = train["unit_sales"].clip(lower=0)
     train["unit_sales"] = train["unit_sales"].fillna(0)
@@ -55,7 +80,7 @@ def clean_data(train):
 
 # ================= MERGE =================
 def merge_data(train, items, stores, holidays, transactions):
-    print("🔗 Merging datasets...")
+    print("[3/5] Merging datasets...")
 
     df = train.merge(items, on="item_nbr", how="left")
     df = df.merge(stores, on="store_nbr", how="left")
@@ -72,7 +97,7 @@ def merge_data(train, items, stores, holidays, transactions):
 
 # ================= FEATURE ENGINEERING =================
 def create_features(df):
-    print("⚙️ Creating advanced features...")
+    print("[4/5] Creating advanced features...")
 
     df = df.sort_values(["item_nbr", "store_nbr", "date"])
 
@@ -85,36 +110,60 @@ def create_features(df):
     df["quarter"] = df["date"].dt.quarter
     df["is_weekend"] = (df["dayofweek"] >= 5).astype(int)
 
+    # ═══════════════════════════════════════════════════════
+    # 🔧 FIX: Apply log1p BEFORE computing lag/rolling features
+    #    so that ALL features and the target are in the SAME
+    #    log-scale. Previously, lags were raw-scale but rolling
+    #    features were log-scale (inconsistent).
+    # ═══════════════════════════════════════════════════════
+    df["unit_sales"] = np.log1p(df["unit_sales"])
+
+    # NOW compute features -- everything is in log-scale.
+    # Keep every lag/rolling calculation inside each item/store series.
+    # A plain rolling() after groupby().shift() can leak values across groups.
     grp = df.groupby(["item_nbr", "store_nbr"])["unit_sales"]
 
-    # 🔥 LAG FEATURES
+    # 🔥 LAG FEATURES (log-scale — consistent with target)
     df["lag_1"] = grp.shift(1)
     df["lag_7"] = grp.shift(7)
     df["lag_14"] = grp.shift(14)
     df["lag_21"] = grp.shift(21)
     df["lag_28"] = grp.shift(28)
-    df["unit_sales"] = np.log1p(df["unit_sales"])
-    # 🔥 ROLLING MEAN
-    df["rolling_mean_7"] = grp.shift(1).rolling(7).mean()
-    df["rolling_mean_14"] = grp.shift(1).rolling(14).mean()
-    df["rolling_mean_30"] = grp.shift(1).rolling(30).mean()
-    
-    # 🔥 TREND COMPONENT (new feature for better forecasting)
+
+    # 🔥 ROLLING MEAN (log-scale — consistent with target)
+    df["rolling_mean_7"] = grp.transform(
+        lambda s: s.shift(1).rolling(7, min_periods=1).mean()
+    )
+    df["rolling_mean_14"] = grp.transform(
+        lambda s: s.shift(1).rolling(14, min_periods=1).mean()
+    )
+    df["rolling_mean_30"] = grp.transform(
+        lambda s: s.shift(1).rolling(30, min_periods=1).mean()
+    )
+
+    # 🔥 TREND COMPONENT (captures if product is growing/declining)
     def calculate_trend(x):
+        x = np.asarray(x)
         if len(x) >= 7:
             try:
-                z = np.polyfit(np.arange(len(x)), x.values, 1)
+                z = np.polyfit(np.arange(len(x)), x, 1)
                 return z[0]  # slope
             except:
                 return 0
         return 0
-    
-    df["trend_30d"] = grp.shift(1).rolling(30, min_periods=7).apply(calculate_trend, raw=False)
+
+    df["trend_30d"] = grp.transform(
+        lambda s: s.shift(1).rolling(30, min_periods=7).apply(calculate_trend, raw=True)
+    )
     df["trend_30d"] = df["trend_30d"].fillna(0)
 
-    # 🔥 ROLLING STD (VERY IMPORTANT)
-    df["rolling_std_7"] = grp.shift(1).rolling(7).std()
-    df["rolling_std_14"] = grp.shift(1).rolling(14).std()
+    # 🔥 ROLLING STD (log-scale — consistent with target)
+    df["rolling_std_7"] = grp.transform(
+        lambda s: s.shift(1).rolling(7, min_periods=2).std()
+    )
+    df["rolling_std_14"] = grp.transform(
+        lambda s: s.shift(1).rolling(14, min_periods=2).std()
+    )
 
     # Fill missing values - better strategy for cold-start
     for col in [
@@ -137,7 +186,15 @@ def create_features(df):
 
     df["perishable"] = df["perishable"].fillna(0)
 
-    print(f"✅ Final shape: {df.shape}")
+    # ── Save family-code mapping for inference consistency ──
+    family_map = df[["family", "family_code"]].drop_duplicates().set_index("family")["family_code"].to_dict()
+    import json
+    map_path = os.path.join(OUT_DIR, "family_code_map.json")
+    with open(map_path, "w") as f:
+        json.dump(family_map, f, indent=2)
+    print(f"[OK] Family code mapping saved -> {map_path}")
+
+    print(f"[OK] Final shape: {df.shape}")
 
     return df
 
@@ -154,7 +211,7 @@ def main():
     # Save
     df.to_csv(os.path.join(OUT_DIR, "processed_demand.csv"), index=False)
 
-    print("✅ Saved → data/processed/processed_demand.csv")
+    print("[DONE] Saved -> data/processed/processed_demand.csv")
 
 
 if __name__ == "__main__":

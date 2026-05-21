@@ -5,6 +5,8 @@ from bson import ObjectId
 from datetime import datetime, timezone
 import pandas as pd
 import pytz
+from product_matching import load_inventory_name_index, match_inventory_product, normalize_product_name, store_id_values
+
 
 onboarding_bp = Blueprint("onboarding", __name__)
 
@@ -223,6 +225,52 @@ def parse_sales_history():
         return jsonify({"message": str(e)}), 500
 
 
+
+
+@onboarding_bp.route("/onboarding/unmatched-sales", methods=["GET"])
+@jwt_required
+def get_unmatched_sales_names():
+    """List uploaded sales product names that were not matched to inventory."""
+    try:
+        db = get_db()
+        store_id = request.current_user.get("store_id")
+        store_ids = store_id_values(store_id)
+
+        pipeline = [
+            {"$match": {"store_id": {"$in": store_ids}, "source": "historical_upload"}},
+            {"$unwind": "$items"},
+            {"$match": {
+                "$or": [
+                    {"items.match_score": None},
+                    {"items.product_id": None},
+                    {"items.product_id": ""},
+                ]
+            }},
+            {"$group": {
+                "_id": "$items.uploaded_name",
+                "rows": {"$sum": 1},
+                "total_qty": {"$sum": "$items.qty"},
+                "last_seen": {"$max": "$created_at"},
+            }},
+            {"$sort": {"rows": -1}},
+            {"$limit": 100},
+        ]
+
+        rows = []
+        for row in db.sales.aggregate(pipeline):
+            if not row.get("_id"):
+                continue
+            rows.append({
+                "uploaded_name": row["_id"],
+                "rows": row.get("rows", 0),
+                "total_qty": row.get("total_qty", 0),
+                "last_seen": row.get("last_seen").isoformat() if row.get("last_seen") else None,
+            })
+
+        return jsonify({"data": rows, "count": len(rows)})
+    except Exception as e:
+        return jsonify({"message": str(e)}), 500
+
 @onboarding_bp.route("/onboarding/parse-photo", methods=["POST"])
 @jwt_required
 def parse_photo():
@@ -269,3 +317,56 @@ def parse_photo():
 
     except Exception as e:
         return jsonify({"message": f"Photo parsing error: {str(e)}"}), 400
+
+
+@onboarding_bp.route("/onboarding/map-sales", methods=["POST"])
+@jwt_required
+def map_sales():
+    """Manually map uploaded sales names to existing inventory products."""
+    try:
+        db = get_db()
+        store_id = request.current_user.get("store_id")
+        data = request.get_json()
+        mappings = data.get("mappings", [])
+
+        updated_count = 0
+        for mapping in mappings:
+            up_name = mapping.get("uploaded_name")
+            inv_id_str = mapping.get("inventory_id")
+            if not up_name or not inv_id_str:
+                continue
+
+            inv = db.inventory.find_one({"_id": ObjectId(inv_id_str)})
+            if not inv:
+                continue
+                
+            canonical_name = inv.get("product_name")
+            prod_id = inv.get("product_id")
+
+            # Update sales collection
+            res = db.sales.update_many(
+                {"store_id": {"$in": store_id_values(store_id)}, "items.uploaded_name": up_name},
+                {"$set": {
+                    "items.$[elem].name": canonical_name,
+                    "items.$[elem].product_id": str(prod_id) if prod_id else None,
+                    "items.$[elem].inventory_id": str(inv["_id"]),
+                    "product_name": canonical_name
+                }},
+                array_filters=[{"elem.uploaded_name": up_name}]
+            )
+            updated_count += res.modified_count
+
+            # Add to product synonyms so future uploads map automatically
+            db.product_synonyms.update_one(
+                {"store_id": store_id, "uploaded_name": up_name},
+                {"$set": {
+                    "canonical_name": canonical_name,
+                    "inventory_id": inv["_id"],
+                    "product_id": prod_id
+                }},
+                upsert=True
+            )
+
+        return jsonify({"message": f"Updated {updated_count} sales records."})
+    except Exception as e:
+        return jsonify({"message": str(e)}), 500

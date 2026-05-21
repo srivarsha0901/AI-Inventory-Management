@@ -30,6 +30,7 @@ export default function OnboardingPage({ startStep = 1 }) {
   const [error,          setError]          = useState('')
   const [fileProcessing, setFileProcessing] = useState(false)
   const [salesUploaded,  setSalesUploaded]  = useState(false)
+  const [salesImportInfo, setSalesImportInfo] = useState(null)
 
   useEffect(() => {
     setStep(isUploadSalesRoute ? 3 : 1)
@@ -105,10 +106,11 @@ export default function OnboardingPage({ startStep = 1 }) {
     try {
       const fd = new FormData()
       fd.append('file', file)
-      await api.post('/onboarding/parse-sales', fd, {
+      const res = await api.post('/onboarding/parse-sales', fd, {
         headers: { 'Content-Type': 'multipart/form-data' },
         timeout: 180000, // sales history imports can take longer for larger files
       })
+      setSalesImportInfo(res.data)
       setSalesUploaded(true)
     } catch (err) {
       if (err.code === 'ECONNABORTED') {
@@ -384,7 +386,7 @@ export default function OnboardingPage({ startStep = 1 }) {
             </div>
             <div className="mt-2 text-[0.75rem] text-[var(--muted)] space-y-0.5">
               <p>• <strong>date</strong> — YYYY-MM-DD (e.g. 2026-03-01)</p>
-              <p>• <strong>product_name</strong> — must match inventory product names exactly</p>
+              <p>• <strong>product_name</strong> — matched automatically against your inventory</p>
               <p>• <strong>qty_sold</strong> — units sold that day</p>
               <p>• <strong>unit_price</strong> — price per unit in ₹</p>
               <p>• <strong>total</strong> — total revenue for that row</p>
@@ -405,8 +407,13 @@ export default function OnboardingPage({ startStep = 1 }) {
               <div className="text-3xl mb-2">✅</div>
               <p className="font-bold text-green-700 text-[0.9rem]">Sales history uploaded!</p>
               <p className="text-green-600 text-[0.8rem] mt-1">
-                Go to Forecast page and click "Run Predictions" to activate AI forecasting.
+                {salesImportInfo?.matched_count ?? 0} rows matched to inventory. Go to Forecast page and click "Run Predictions".
               </p>
+              {!!salesImportInfo?.unmatched_count && (
+                <p className="text-amber-700 text-[0.76rem] mt-2">
+                  {salesImportInfo.unmatched_count} product names need review.
+                </p>
+              )}
             </div>
           )}
 

@@ -10,52 +10,62 @@ auth_bp = Blueprint("auth", __name__)
 
 @auth_bp.route("/register", methods=["POST"])
 def register():
-    db   = get_db()
-    data = request.get_json()
+    try:
+        db   = get_db()
+        if db is None:
+            return jsonify({"message": "Database not available. Is MongoDB running?"}), 503
 
-    # ✅ VALIDATE REGISTRATION DATA
-    success, result = validate_request(RegisterSchema, data)
-    if not success:
-        return jsonify(result), 400
-    
-    validated_data = result
+        data = request.get_json(silent=True)
+        if not data:
+            return jsonify({"message": "Request body must be JSON"}), 400
 
-    if db.users.find_one({"email": validated_data["email"]}):
-        return jsonify({"message": "Email already registered"}), 409
+        # ✅ VALIDATE REGISTRATION DATA
+        success, result = validate_request(RegisterSchema, data)
+        if not success:
+            msg = result.get("error") or result.get("message") or "Invalid registration data"
+            return jsonify({"message": msg, "error": msg}), 400
 
-    now      = datetime.now(timezone.utc)
-    store_id = db.stores.insert_one({
-        "name":       validated_data["store_name"],
-        "address":    validated_data["address"],
-        "created_at": now,
-        "is_active":  True,
-    }).inserted_id
+        validated_data = result
+        email = validated_data["email"]
 
-    user = {
-        "name":                validated_data["name"],
-        "email":               validated_data["email"],
-        "password_hash":       generate_password_hash(validated_data["password"]),
-        "role":                "manager",
-        "store_id":            store_id,
-        "is_active":           True,
-        "created_at":          now,
-        "last_login":          None,
-        "onboarding_complete": False,
-    }
-    user["_id"] = db.users.insert_one(user).inserted_id
+        if db.users.find_one({"email": {"$regex": f"^{email}$", "$options": "i"}}):
+            return jsonify({"message": "Email already registered"}), 409
 
-    return jsonify({
-        "message": "Registration successful",
-        "token":   generate_token(user),
-        "user": {
-            "id":                  str(user["_id"]),
+        now      = datetime.now(timezone.utc)
+        store_id = db.stores.insert_one({
+            "name":       validated_data["store_name"],
+            "address":    validated_data["address"],
+            "created_at": now,
+            "is_active":  True,
+        }).inserted_id
+
+        user = {
             "name":                validated_data["name"],
-            "email":               validated_data["email"],
+            "email":               email,
+            "password_hash":       generate_password_hash(validated_data["password"]),
             "role":                "manager",
-            "store_id":            str(store_id),
+            "store_id":            store_id,
+            "is_active":           True,
+            "created_at":          now,
+            "last_login":          None,
             "onboarding_complete": False,
         }
-    }), 201
+        user["_id"] = db.users.insert_one(user).inserted_id
+
+        return jsonify({
+            "message": "Registration successful",
+            "token":   generate_token(user),
+            "user": {
+                "id":                  str(user["_id"]),
+                "name":                validated_data["name"],
+                "email":               email,
+                "role":                "manager",
+                "store_id":            str(store_id),
+                "onboarding_complete": False,
+            }
+        }), 201
+    except Exception as e:
+        return jsonify({"message": f"Registration failed: {str(e)}"}), 500
 
 
 @auth_bp.route("/login", methods=["POST"])

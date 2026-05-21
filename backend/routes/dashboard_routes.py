@@ -4,6 +4,7 @@ from database import get_db
 from bson import ObjectId
 from datetime import datetime, timezone
 from caching import get_cache
+from product_matching import store_id_values
 
 dashboard_bp = Blueprint("dashboard", __name__)
 
@@ -264,7 +265,7 @@ def get_low_stock():
 @dashboard_bp.route("/inventory/expiring", methods=["GET"])
 @jwt_required
 def get_expiring():
-    """Get items approaching expiry (if expiry_date field exists)."""
+    """Get batches approaching expiry, with product-level fallback."""
     try:
         db       = get_db()
         store_id = request.current_user.get("store_id")
@@ -273,15 +274,41 @@ def get_expiring():
         from datetime import timedelta
         threshold = now + timedelta(days=7)
 
-        query = {"store_id": store_id} if store_id else {}
-        query["expiry_date"] = {"$lte": threshold, "$gte": now}
+        store_ids = store_id_values(store_id)
+        batch_query = {
+            "qty_remaining": {"$gt": 0},
+            "expiry_date": {"$lte": threshold, "$gte": now},
+        }
+        if store_ids:
+            batch_query["store_id"] = {"$in": store_ids}
 
-        records = list(db.inventory.find(query).sort("expiry_date", 1))
-        for r in records:
-            r["id"]         = str(r.pop("_id"))
-            r["product_id"] = str(r.get("product_id", ""))
-            if "expiry_date" in r:
-                r["expiry_date"] = r["expiry_date"].isoformat()
+        records = []
+        batches = list(db.inventory_batches.find(batch_query).sort("expiry_date", 1))
+        for batch in batches:
+            batch_id = str(batch["_id"])
+            records.append({
+                "id": batch_id,
+                "batch_id": batch_id,
+                "inventory_id": str(batch.get("inventory_id", "")),
+                "product_id": str(batch.get("product_id", "")),
+                "product_name": batch.get("product_name", "Unknown"),
+                "stock": batch.get("qty_remaining", 0),
+                "qty_remaining": batch.get("qty_remaining", 0),
+                "source": batch.get("source", "batch"),
+                "expiry_date": batch.get("expiry_date").isoformat() if batch.get("expiry_date") else None,
+            })
+
+        if not records:
+            query = {"store_id": {"$in": store_ids}} if store_ids else {}
+            query["expiry_date"] = {"$lte": threshold, "$gte": now}
+            inventory_records = list(db.inventory.find(query).sort("expiry_date", 1))
+            for r in inventory_records:
+                r["id"] = str(r.pop("_id"))
+                r["product_id"] = str(r.get("product_id", ""))
+                if "expiry_date" in r:
+                    r["expiry_date"] = r["expiry_date"].isoformat()
+                records.append(r)
+
         return jsonify({"data": records})
     except Exception as e:
         return jsonify({"message": str(e)}), 500

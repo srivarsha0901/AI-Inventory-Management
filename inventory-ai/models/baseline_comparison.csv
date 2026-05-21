@@ -1,0 +1,4 @@
+Compared_Model,Baseline,RMSE_log,MAE_log,RMSE_real,MAE_real,MAPE,SMAPE,WAPE,Bias_pct,Accuracy_pct,WAPE_accuracy_pct
+XGBoost,lag_7_or_recent_mean,0.719,0.5626,20.19,5.0,116.36,64.2,61.41,8.49,1.96,38.59
+LightGBM,lag_7_or_recent_mean,0.719,0.5626,20.19,5.0,116.36,64.2,61.41,8.49,1.96,38.59
+CatBoost,lag_7_or_recent_mean,0.719,0.5626,20.19,5.0,116.36,64.2,61.41,8.49,1.96,38.59

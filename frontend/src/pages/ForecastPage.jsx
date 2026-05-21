@@ -11,6 +11,7 @@ import LoadingSpinner from '../components/ui/LoadingSpinner'
 
 const TREND_ICON  = { up:'↑', down:'↓', stable:'→' }
 const TREND_COLOR = { up:'text-green-600', down:'text-red-500', stable:'text-[var(--muted)]' }
+const CONFIDENCE_SCORE = { high: 92, medium: 68, low: 38 }
 
 export default function ForecastPage() {
   const navigate = useNavigate()
@@ -24,7 +25,8 @@ export default function ForecastPage() {
     const prev       = predicted * (0.9 + (i % 5) * 0.05)
     const trend      = predicted > prev * 1.02 ? 'up'
                      : predicted < prev * 0.98 ? 'down' : 'stable'
-    const confidence = 75 + (i % 3 === 0 ? 15 : i % 3 === 1 ? 10 : 5)
+    const confidenceLabel = item.prediction_confidence || 'low'
+    const confidence = CONFIDENCE_SCORE[confidenceLabel] || 0
     const isML       = predicted > 0
     return {
       id:         i,
@@ -33,7 +35,10 @@ export default function ForecastPage() {
       today:      Math.round(predicted),
       tomorrow:   Math.round(predicted * (0.95 + (i % 5) * 0.02)),
       week:       Math.round(predicted * 7),
+      model:      item.model_predicted_sales,
+      baseline:   item.baseline_predicted_sales,
       confidence: isML ? confidence : 0,
+      confidenceLabel,
       trend:      isML ? trend : 'stable',
       isML,
     }
@@ -196,7 +201,7 @@ export default function ForecastPage() {
                           <div className="flex-1 bg-[var(--cream)] border border-[var(--border)] rounded-full h-1.5 w-20 overflow-hidden">
                             <div className="h-full rounded-full bg-[var(--teal)]" style={{ width:`${f.confidence}%` }} />
                           </div>
-                          <span className="text-[0.78rem] font-bold text-[var(--teal)]">{f.confidence}%</span>
+                          <span className="text-[0.78rem] font-bold text-[var(--teal)] capitalize">{f.confidenceLabel}</span>
                         </div>
                       ) : <span className="text-[0.78rem] text-[var(--muted)]">—</span>}
                     </td>

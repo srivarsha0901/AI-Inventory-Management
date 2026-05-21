@@ -10,15 +10,9 @@ from transactions import TransactionManager, transaction_reorder_delivery
 
 ml_bp = Blueprint("ml", __name__)
 
-INDIAN_FESTIVALS = [
-    {"name":"Diwali",    "month":10, "boost":{"Sweets":1.8,"Snacks":1.8,"Oils":1.7,"Beverages":1.5,"Dairy":1.3}},
-    {"name":"Christmas", "month":12, "boost":{"Bakery":1.6,"Beverages":1.5,"Dairy":1.4,"Eggs":1.6}},
-    {"name":"Holi",      "month":3,  "boost":{"Beverages":1.4,"Dairy":1.3,"Snacks":1.3}},
-    {"name":"Eid",       "month":4,  "boost":{"Grains":1.5,"Dairy":1.4,"Oils":1.4}},
-    {"name":"Pongal",    "month":1,  "boost":{"Grains":1.4,"Dairy":1.4,"Vegetables":1.3}},
-    {"name":"New Year",  "month":1,  "boost":{"Beverages":1.5,"Bakery":1.4,"Snacks":1.4}},
-    {"name":"Navratri",  "month":10, "boost":{"Dairy":1.3,"Fruits":1.3,"Grains":1.3}},
-]
+FORECAST_UNDERPREDICTION_BUFFER = 1.15
+
+
 
 
 @ml_bp.route("/reorder/suggestions", methods=["GET"])
@@ -35,13 +29,31 @@ def get_reorder():
         except:
             store_id_obj = store_id
         
-        query    = {"store_id": store_id_obj} if store_id else {}
+        # Build query that works with both string and ObjectId store_id formats
+        store_id_query = {"$in": [store_id, store_id_obj]} if store_id else {}
+        query = {"store_id": store_id_query} if store_id else {}
+        
         now      = datetime.now(timezone.utc)
 
         items = list(db.inventory.find({
             **query,
             "stock_status": {"$in": ["Low Stock", "Out of Stock"]}
         }))
+        
+        # Also include high-demand items with insufficient stock (matching alert criteria)
+        high_demand_items = list(db.inventory.find({
+            **query,
+            "predicted_sales": {"$gte": 10},
+            "$expr": {"$lt": ["$stock", {"$multiply": ["$predicted_sales", 3]}]}
+        }))
+        
+        # Merge both lists, removing duplicates by product_name
+        items_dict = {item["product_name"]: item for item in items}
+        for item in high_demand_items:
+            if item["product_name"] not in items_dict:
+                items_dict[item["product_name"]] = item
+        
+        items = list(items_dict.values())
 
         suggestions = []
         for item in items:
@@ -53,16 +65,27 @@ def get_reorder():
             shelf_life   = item.get("shelf_life_days", 0)
             cost_price   = item.get("cost_price", 0)
             selling_price = item.get("selling_price", 0)
+            lead_time    = item.get("lead_time_days", 2)
+            moq          = item.get("moq", 1)
 
             # Fallback: look up cost_price from products collection
-            if cost_price == 0 and item.get("product_id"):
-                prod = db.products.find_one({"_id": item["product_id"]})
-                if prod:
-                    cost_price    = prod.get("cost_price", 0)
-                    selling_price = prod.get("selling_price", 0)
-                    shelf_life    = prod.get("shelf_life_days", shelf_life)
+            if (cost_price == 0 or not cost_price) and item.get("product_id"):
+                try:
+                    prod = db.products.find_one({"_id": item["product_id"]})
+                    if prod:
+                        cost_price    = prod.get("cost_price", 0)
+                        selling_price = prod.get("selling_price", 0)
+                        shelf_life    = prod.get("shelf_life_days", shelf_life)
+                        lead_time     = prod.get("lead_time_days", lead_time)
+                        moq           = prod.get("moq", moq)
+                except:
+                    pass
+            
+            # If still no cost_price, use a default to prevent errors
+            if not cost_price or cost_price == 0:
+                cost_price = 50  # Default fallback price
 
-            # ── Shelf-life aware reorder calculation ──
+            # ── Smarter Reorder Calculation (Shelf-life, Lead Time, MOQ) ──
             if predicted > 0:
                 # Calculate how many days worth of stock to order
                 effective_restock = restock_days
@@ -77,13 +100,24 @@ def get_reorder():
                     elif shelf_life <= 7:
                         effective_restock = min(effective_restock, 4)  # Max 4 days stock
 
-                target      = int(predicted * effective_restock) + safety
-                reorder_qty = max(target - stock, 0)
+                # Reorder Point = Demand during lead time + safety stock
+                dynamic_reorder_pt = int(predicted * lead_time) + safety
+                # Target stock level after delivery
+                target = dynamic_reorder_pt + int(predicted * effective_restock)
+                
+                # Check if we need to order (stock is below the dynamic reorder point)
+                if stock <= dynamic_reorder_pt:
+                    reorder_qty = max(target - stock, moq)
+                else:
+                    reorder_qty = 0
             else:
-                reorder_qty = max(reorder_pt + safety - stock, 0)
-                # If shelf life is very short and no prediction, keep orders small
-                if shelf_life > 0 and shelf_life <= 3:
-                    reorder_qty = min(reorder_qty, safety * 2)
+                if stock <= reorder_pt:
+                    reorder_qty = max(reorder_pt + safety - stock, moq)
+                    # If shelf life is very short and no prediction, keep orders small
+                    if shelf_life > 0 and shelf_life <= 3:
+                        reorder_qty = min(reorder_qty, safety * 2)
+                else:
+                    reorder_qty = 0
 
             urgency = (
                 "critical" if stock == 0 else
@@ -96,7 +130,7 @@ def get_reorder():
 
             # Check if a reorder order for this product already exists (pending/approved)
             existing_order = db.reorder_orders.find_one({
-                "store_id": store_id_obj,
+                "store_id": {"$in": [store_id, store_id_obj]},
                 "product_id": item.get("product_id"),
                 "status": {"$in": ["pending", "approved"]}
             })
@@ -172,6 +206,10 @@ def get_forecast():
                 "item_nbr":            str(item.get("sku", i)),
                 "predicted_sales":     predicted,
                 "base_predicted":      item.get("base_predicted", predicted),
+                "forecast_buffer":     item.get("forecast_buffer"),
+                "model_predicted_sales": item.get("model_predicted_sales"),
+                "baseline_predicted_sales": item.get("baseline_predicted_sales"),
+                "prediction_confidence": item.get("prediction_confidence", "low" if predicted else None),
                 "seasonal_boost":      item.get("seasonal_boost"),
                 "seasonal_multiplier": item.get("seasonal_multiplier", 1.0),
                 "stock":               item.get("stock", 0),
@@ -189,13 +227,14 @@ def run_predictions():
     try:
         db       = get_db()
         store_id = request.current_user.get("store_id")
+        
+        # Convert store_id to ObjectId for DB queries
+        try:
+            store_id_obj = ObjectId(store_id)
+        except:
+            store_id_obj = store_id
 
-        sales = list(db.sales.find({"store_id": store_id}))
-        if len(sales) < 3:
-            return jsonify({
-                "message": "Not enough sales data yet. Need at least 3 days of sales.",
-                "ready":   False,
-            }), 200
+        sales = list(db.sales.find({"store_id": {"$in": [store_id, store_id_obj]}}))
 
         records = []
         for sale in sales:
@@ -210,17 +249,30 @@ def run_predictions():
                     "product_name": name,
                     "qty_sold":     item.get("qty", 1),
                     "date":         date_str,
+                    "stockout_limited": bool(item.get("stockout_limited", False)),
                 })
 
             if sale.get("product_name") and not sale.get("items"):
                 records.append({
                     "product_name": sale["product_name"],
-                    "qty_sold":     sale.get("subtotal", 1),
+                    "qty_sold":     sale.get("qty_sold", sale.get("qty", 1)),
                     "date":         date_str,
                 })
 
         if not records:
             return jsonify({"message": "No sales records found", "ready": False}), 200
+
+        unique_dates = sorted({rec["date"] for rec in records})
+        if len(unique_dates) < 7:
+            return jsonify({
+                "message": (
+                    f"Not enough sales history yet. Need at least 7 distinct sales days; "
+                    f"found {len(unique_dates)}."
+                ),
+                "ready": False,
+                "sales_days": len(unique_dates),
+                "sales_records": len(records),
+            }), 200
 
         # Use environment variable for ML path, with fallback to relative path
         ml_path = os.getenv("ML_MODEL_PATH")
@@ -247,20 +299,63 @@ def run_predictions():
                 "ready": False
             }), 500
 
-        predictions = predict_for_store(records, store_id)
+        # 🔧 FIX: Pass product categories for proper family_code mapping
+        categories_map = {}
+        for rec in records:
+            pname = rec["product_name"]
+            if pname not in categories_map:
+                inv = db.inventory.find_one({
+                    "store_id": {"$in": [store_id, store_id_obj]},
+                    "product_name": pname
+                })
+                categories_map[pname] = inv.get("category", "General") if inv else "General"
 
-        # Detect active festivals
-        from datetime import datetime as dt2
-        current_month  = dt2.today().month
-        next_month     = (current_month % 12) + 1
-        active_boosts  = {}
+        predictions = predict_for_store(records, store_id, categories=categories_map)
+
+        # Detect active festivals and custom store events
+        from datetime import datetime as dt2, timedelta
+        now_dt = dt2.now(timezone.utc)
+        import holidays
+        ind_holidays = holidays.India(years=now_dt.year)
+        active_boosts = {}
         festival_names = []
+        
+        HOLIDAY_BOOSTS = {
+            "diwali": {"categories": ["Sweets","Snacks","Oils","Beverages","Dairy"], "multiplier": 1.5},
+            "holi": {"categories": ["Beverages","Dairy","Snacks"], "multiplier": 1.4},
+            "christmas": {"categories": ["Bakery","Beverages","Dairy","Eggs"], "multiplier": 1.4},
+            "eid": {"categories": ["Grains","Dairy","Oils"], "multiplier": 1.4},
+            "new year": {"categories": ["Beverages","Bakery","Snacks"], "multiplier": 1.3},
+            "independence day": {"categories": ["Snacks","Beverages"], "multiplier": 1.2},
+            "republic day": {"categories": ["Snacks","Beverages"], "multiplier": 1.2},
+        }
 
-        for fest in INDIAN_FESTIVALS:
-            if fest["month"] in [current_month, next_month]:
-                festival_names.append(fest["name"])
-                for cat, mult in fest["boost"].items():
-                    active_boosts[cat] = max(active_boosts.get(cat, 1.0), mult)
+        # Check today and next 7 days for national holidays
+        for i in range(8):
+            check_date = (now_dt + timedelta(days=i)).date()
+            if check_date in ind_holidays:
+                h_name = ind_holidays.get(check_date)
+                if h_name not in festival_names:
+                    festival_names.append(h_name)
+                # Apply boost if defined
+                for key, boost_data in HOLIDAY_BOOSTS.items():
+                    if key in h_name.lower():
+                        for cat in boost_data["categories"]:
+                            active_boosts[cat] = max(active_boosts.get(cat, 1.0), boost_data["multiplier"])
+
+        # Apply active store events (promotions, local events)
+        in_7_days = now_dt + timedelta(days=7)
+        store_events = list(db.store_events.find({
+            "store_id": {"$in": [store_id, store_id_obj]},
+            "start_date": {"$lte": in_7_days},
+            "end_date": {"$gte": now_dt}
+        }))
+        
+        for evt in store_events:
+            festival_names.append(evt.get("name", "Store Event"))
+            evt_multiplier = evt.get("multiplier", 1.2)
+            for cat in evt.get("boost_categories", []):
+                active_boosts[cat] = max(active_boosts.get(cat, 1.0), evt_multiplier)
 
         if festival_names:
             print(f"🎉 Festival boost: {', '.join(festival_names)}")
@@ -272,21 +367,26 @@ def run_predictions():
             base_pred = pred["predicted_sales"]
 
             inv_item = db.inventory.find_one({
-                "store_id":     store_id,
+                "store_id": {"$in": [store_id, store_id_obj]},
                 "product_name": pred["product_name"]
             })
             category = inv_item.get("category", "General") if inv_item else "General"
             stock = float(inv_item.get("stock", 0) or 0) if inv_item else 0
             multiplier = active_boosts.get(category, 1.0)
 
-            # Daily forecast with seasonal boost.
-            final_pred = max(round(base_pred * multiplier, 2), 0)
+            # Daily forecast with seasonal/event boost plus a safety buffer.
+            # Recent evaluation showed the model under-predicts demand overall,
+            # so inventory planning uses a conservative adjusted forecast.
+            boosted_pred = base_pred * multiplier
+            final_pred = max(round(boosted_pred * FORECAST_UNDERPREDICTION_BUFFER, 2), 0)
 
             # Guardrail: avoid unrealistic forecasts relative to current stock.
+            # 🔧 FIX: Softened from 2× to 5× — the old cap was hiding real demand
+            #    and causing chronic under-ordering for fast-moving products.
             if stock > 0:
-                final_pred = min(final_pred, round(stock * 2, 2))
+                final_pred = min(final_pred, round(stock * 5, 2))
 
-            if multiplier > 1.0:
+            if multiplier > 1.0 or FORECAST_UNDERPREDICTION_BUFFER > 1.0:
                 print(f"  🎉 {pred['product_name']} ({category}): {base_pred} → {final_pred} ({multiplier}×)")
 
             avg_daily = final_pred if final_pred > 0 else max(base_pred, 0)
@@ -301,20 +401,64 @@ def run_predictions():
             if stock > 0 and new_reorder > stock * 2:
                 new_reorder = max(round(stock * 1.5), new_safety + 1)
 
+            # ── RECALCULATE STOCK STATUS ──
+            # Determine stock status based on stock vs safety/reorder points
+            if stock == 0:
+                new_status = "Out of Stock"
+            elif stock < new_safety:
+                new_status = "Low Stock"
+            elif stock < new_reorder:
+                new_status = "Low Stock"
+            else:
+                new_status = "Healthy"
+
             result = db.inventory.update_one(
-                {"store_id": store_id, "product_name": pred["product_name"]},
+                {"store_id": {"$in": [store_id, store_id_obj]}, "product_name": pred["product_name"]},
                 {"$set": {
                     "predicted_sales":     final_pred,
                     "base_predicted":      base_pred,
+                    "forecast_buffer":     FORECAST_UNDERPREDICTION_BUFFER,
+                    "model_predicted_sales": pred.get("model_predicted_sales"),
+                    "baseline_predicted_sales": pred.get("baseline_predicted_sales"),
+                    "prediction_confidence": pred.get("confidence", "low"),
                     "seasonal_boost":      festival_names[0] if festival_names else None,
                     "seasonal_multiplier": multiplier,
                     "safety_stock":        new_safety,
                     "reorder_point":       new_reorder,
+                    "stock_status":        new_status,
                     "last_predicted":      now,
                 }}
             )
             if result.modified_count:
                 updated += 1
+
+            # ── CREATE RESTOCKING ALERTS ──
+            # Alert if: High demand predicted BUT stock is insufficient
+            if final_pred >= 10 and stock < final_pred * 3:  # Not enough for 3 days of sales
+                # Check if alert already exists
+                existing_alert = db.alerts.find_one({
+                    "product_name": pred["product_name"],
+                    "store_id": {"$in": [store_id, store_id_obj]},
+                    "status":       "active",
+                    "type":         "restock_needed"
+                })
+                
+                if not existing_alert:
+                    severity_level = "critical" if stock < final_pred else "warning"
+                    alert_msg = f"{pred['product_name']}: Expected {round(final_pred)} units/day but only {round(stock)} in stock — RESTOCK NEEDED!"
+                    
+                    db.alerts.insert_one({
+                        "product_name":     pred["product_name"],
+                        "type":             "restock_needed",
+                        "message":          alert_msg,
+                        "severity":         severity_level,
+                        "status":           "active",
+                        "store_id":         store_id,
+                        "predicted_demand": final_pred,
+                        "current_stock":    stock,
+                        "created_at":       now,
+                    })
+                    print(f"  🚨 Alert created: {alert_msg}")
 
         festival_msg = (
             f" (🎉 {', '.join(festival_names)} boost applied!)"
@@ -349,7 +493,7 @@ def get_reorder_orders():
             store_id_obj = store_id
         
         status_filter = request.args.get("status", "")  # pending | approved | dismissed | all
-        query = {"store_id": store_id_obj}
+        query = {"store_id": {"$in": [store_id, store_id_obj]}}
         
         if status_filter and status_filter != "all":
             query["status"] = status_filter
@@ -397,7 +541,7 @@ def approve_reorder(item_id):
             store_id_obj = store_id
 
         result = db.reorder_orders.update_one(
-            {"_id": ObjectId(item_id), "store_id": store_id_obj},
+            {"_id": ObjectId(item_id), "store_id": {"$in": [store_id, store_id_obj]}},
             {"$set": {
                 "status": "approved", 
                 "approved_at": now, 
@@ -429,7 +573,7 @@ def dismiss_reorder(item_id):
             store_id_obj = store_id
 
         result = db.reorder_orders.update_one(
-            {"_id": ObjectId(item_id), "store_id": store_id_obj},
+            {"_id": ObjectId(item_id), "store_id": {"$in": [store_id, store_id_obj]}},
             {"$set": {
                 "status": "dismissed", 
                 "dismissed_at": now,

@@ -1,0 +1,34 @@
+═══════════════════════════════════════════════════════════════
+                     FRESH PRODUCE SUPPLIERS
+                        Invoice #INV-2026-0420
+═══════════════════════════════════════════════════════════════
+
+Date: 20-Apr-2026
+Supplier: Fresh Produce Suppliers
+Invoice ID: INV-2026-0420
+
+───────────────────────────────────────────────────────────────
+
+ITEM DETAILS:
+
+Tomatoes              50  kg    28   1400
+Full Cream Milk      100  L     55   5500
+Sourdough Bread       40  loaves 90   3600
+Greek Yogurt          60  cups   80   4800
+Bananas               30  dozen  38   1140
+Spinach               25  bunches 22   550
+Potatoes              80  kg    18   1440
+Mango Alphonso        45  kg    120  5400
+Carrots               35  kg    20   700
+Onions                60  kg    22   1320
+
+───────────────────────────────────────────────────────────────
+
+SUBTOTAL:                       26,750
+Tax (5%):                        1,337
+TOTAL AMOUNT:                   28,087
+
+═══════════════════════════════════════════════════════════════
+Payment Terms: Net 7 days
+Thank you for your business!
+═══════════════════════════════════════════════════════════════

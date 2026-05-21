@@ -49,8 +49,22 @@ df.loc[mask, "stock"] = (
 # ================= CALCULATIONS =================
 print("⚙️ Calculating inventory decisions...")
 
-# Safety stock (20% of predicted demand)
-df["safety_stock"] = 0.2 * df["predicted_sales"]
+# 🔧 FIX: Proper safety stock formula
+#    safety_stock = z × σ_demand × √(lead_time_days)
+#    z = 1.65 for 95% service level
+SERVICE_LEVEL_Z = 1.65
+DEFAULT_LEAD_TIME_DAYS = 3  # typical grocery restock lead time
+
+# Use rolling std from predictions if available, else estimate from predicted_sales
+if "demand_std" in df.columns:
+    demand_std = df["demand_std"]
+else:
+    # Estimate: std ≈ 30% of mean demand (reasonable for grocery)
+    demand_std = 0.30 * df["predicted_sales"]
+
+df["safety_stock"] = (
+    SERVICE_LEVEL_Z * demand_std * np.sqrt(DEFAULT_LEAD_TIME_DAYS)
+).clip(lower=1)  # minimum 1 unit safety stock
 
 # Reorder quantity
 df["reorder_qty"] = (

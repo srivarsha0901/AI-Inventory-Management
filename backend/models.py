@@ -9,6 +9,12 @@ def init_collections(db):
     # ── Inventory ─────────────────────────────────────────
     db.inventory.create_index([("product_id", ASCENDING)], unique=True)
     db.inventory.create_index([("stock_status", ASCENDING)])
+    db.inventory.create_index([("normalized_name", ASCENDING)])
+
+    # Inventory Batches / Expiry Lots
+    db.inventory_batches.create_index([("store_id", ASCENDING)])
+    db.inventory_batches.create_index([("inventory_id", ASCENDING)])
+    db.inventory_batches.create_index([("expiry_date", ASCENDING)])
 
     # ── Sales ─────────────────────────────────────────────
     db.sales.create_index([("created_at", DESCENDING)])

@@ -5,10 +5,58 @@ Ensures data consistency across multiple documents.
 
 from contextlib import contextmanager
 from pymongo import MongoClient
+from pymongo import ReturnDocument
 from pymongo.errors import OperationFailure, DuplicateKeyError
 from functools import wraps
 from typing import Callable, Any, Optional, Dict
 import traceback
+
+
+def _deduct_inventory_batches(db, inventory, qty, store_ids, session):
+    """Consume stock from the earliest-expiring batches first."""
+    remaining = float(qty)
+    consumed = []
+    batch_query = {
+        "store_id": {"$in": store_ids},
+        "inventory_id": inventory["_id"],
+        "qty_remaining": {"$gt": 0},
+    }
+    expiring_batches = list(
+        db.inventory_batches
+        .find({**batch_query, "expiry_date": {"$ne": None}}, session=session)
+        .sort([("expiry_date", 1), ("created_at", 1)])
+    )
+    undated_batches = list(
+        db.inventory_batches
+        .find({**batch_query, "expiry_date": None}, session=session)
+        .sort([("created_at", 1)])
+    )
+
+    for batch in expiring_batches + undated_batches:
+        if remaining <= 0:
+            break
+
+        available = float(batch.get("qty_remaining", 0) or 0)
+        if available <= 0:
+            continue
+
+        take = min(available, remaining)
+        db.inventory_batches.update_one(
+            {"_id": batch["_id"]},
+            {"$inc": {"qty_remaining": -take}},
+            session=session,
+        )
+        consumed.append({
+            "batch_id": str(batch["_id"]),
+            "qty": take,
+            "expiry_date": batch.get("expiry_date"),
+        })
+        remaining -= take
+
+    return {
+        "consumed": consumed,
+        "unbatched_qty": max(0, remaining),
+    }
 
 
 class TransactionManager:
@@ -17,7 +65,7 @@ class TransactionManager:
     def __init__(self, client: MongoClient, db=None):
         """Initialize with MongoDB client and optional database instance."""
         self.client = client
-        self.db = db or client.get_database()
+        self.db = client.get_database() if db is None else db
     
     @contextmanager
     def transaction(self, session=None):
@@ -59,11 +107,38 @@ class TransactionManager:
         except DuplicateKeyError as e:
             return False, None, f"Duplicate entry: {str(e)}"
         except OperationFailure as e:
-            return False, None, f"Operation failed: {str(e)}"
+            err = str(e)
+            if self._should_retry_without_transaction(err):
+                try:
+                    result = operation(*args, **kwargs, session=None)
+                    return True, result, None
+                except Exception as fallback_err:
+                    return False, None, f"Operation failed: {fallback_err}"
+            return False, None, f"Operation failed: {err}"
         except Exception as e:
-            return False, None, f"Transaction failed: {str(e)}"
+            err = str(e)
+            if self._should_retry_without_transaction(err):
+                try:
+                    result = operation(*args, **kwargs, session=None)
+                    return True, result, None
+                except Exception as fallback_err:
+                    return False, None, f"Transaction failed: {fallback_err}"
+            return False, None, f"Transaction failed: {err}"
         finally:
             session.end_session()
+
+    @staticmethod
+    def _should_retry_without_transaction(error_message: str) -> bool:
+        lowered = error_message.lower()
+        return any(
+            token in lowered
+            for token in (
+                "transaction",
+                "replica set",
+                "not supported",
+                "illegaloperation",
+            )
+        )
 
 
 # ✅ REORDER DELIVERY TRANSACTION
@@ -79,7 +154,7 @@ def transaction_reorder_delivery(db, order_id: str, received_qty: int, session) 
     Rollback on failure ensures no partial updates.
     """
     from bson.objectid import ObjectId
-    from datetime import datetime
+    from datetime import datetime, timedelta
     
     try:
         order_oid = ObjectId(order_id)
@@ -105,12 +180,27 @@ def transaction_reorder_delivery(db, order_id: str, received_qty: int, session) 
     
     # Step 2: Increment inventory stock atomically
     store_id = order_update.get("store_id")
+    store_ids = [store_id]
+    try:
+        store_id_str = str(store_id)
+        if store_id_str not in store_ids:
+            store_ids.append(store_id_str)
+    except Exception:
+        pass
+
     product_id = order_update.get("product_id")
+    product_oid = product_id if isinstance(product_id, ObjectId) else ObjectId(product_id)
     
     inventory_update = db.inventory.find_one_and_update(
-        {"_id": ObjectId(product_id), "store_id": store_id},
-        {"$inc": {"stock": received_qty}},
-        return_document=True,
+        {
+            "store_id": {"$in": store_ids},
+            "$or": [
+                {"_id": product_oid},
+                {"product_id": product_oid},
+            ],
+        },
+        {"$inc": {"stock": received_qty}, "$set": {"last_updated": datetime.utcnow()}},
+        return_document=ReturnDocument.AFTER,
         session=session
     )
     
@@ -153,9 +243,17 @@ def transaction_complete_sale(db, sale_data: Dict, session) -> Dict:
     Rollback ensures inventory never corrupted.
     """
     from bson.objectid import ObjectId
-    from datetime import datetime
+    from datetime import datetime, timedelta
     
     store_id = sale_data["store_id"]
+    store_ids = [store_id]
+    try:
+        store_id_str = str(store_id)
+        if store_id_str not in store_ids:
+            store_ids.append(store_id_str)
+    except Exception:
+        pass
+
     items = sale_data["items"]
     is_success = False
     
@@ -164,25 +262,78 @@ def transaction_complete_sale(db, sale_data: Dict, session) -> Dict:
     for item in items:
         product_oid = ObjectId(item["product_id"])
         qty = int(item["qty"])
-        
+
+        product_clause = {
+            "$or": [
+                {"_id": product_oid},
+                {"product_id": product_oid},
+            ],
+        }
+        if store_ids:
+            inventory_filter = {
+                "$and": [
+                    product_clause,
+                    {
+                        "$or": [
+                            {"store_id": {"$in": store_ids}},
+                            {"store_id": {"$exists": False}},
+                            {"store_id": None},
+                        ],
+                    },
+                ],
+            }
+        else:
+            inventory_filter = product_clause
+
+        stock_before_doc = db.inventory.find_one(inventory_filter, session=session)
+        if not stock_before_doc:
+            raise ValueError(f"Product {item['product_id']} not found")
+
+        stock_before = stock_before_doc.get("stock", 0)
+        if stock_before < qty:
+            raise ValueError(f"Insufficient stock for {stock_before_doc.get('product_name', item['product_id'])}")
+
         inventory = db.inventory.find_one_and_update(
-            {"_id": product_oid, "store_id": store_id},
-            {"$inc": {"stock": -qty}},
-            return_document=True,
+            inventory_filter,
+            {
+                "$inc": {"stock": -qty},
+                "$set": {"last_updated": datetime.utcnow()},
+            },
+            return_document=ReturnDocument.AFTER,
             session=session
         )
-        
-        if not inventory:
-            raise ValueError(f"Product {item['product_id']} not found")
-        
-        if inventory.get("stock", 0) < 0:
-            raise ValueError(f"Insufficient stock for {item['product_id']}")
-        
+
+        reorder_point = inventory.get("reorder_point", inventory.get("safety_stock", 10))
+        status = (
+            "Out of Stock" if inventory.get("stock", 0) == 0 else
+            "Low Stock" if inventory.get("stock", 0) <= reorder_point else
+            "Healthy"
+        )
+        db.inventory.update_one(
+            {"_id": inventory["_id"]},
+            {"$set": {"stock_status": status}},
+            session=session,
+        )
+        inventory["stock_status"] = status
+        inventory["stock_before_sale"] = stock_before
+        inventory["stockout_limited"] = qty >= stock_before
+        batch_usage = _deduct_inventory_batches(db, inventory, qty, store_ids, session)
+
+        item["product_id"] = str(inventory.get("product_id") or inventory["_id"])
+        item.setdefault("name", inventory.get("product_name", inventory.get("name", "Unknown")))
+        item["inventory_id"] = str(inventory["_id"])
+        item["stock_before_sale"] = stock_before
+        item["stockout_limited"] = qty >= stock_before
+        item["batch_usage"] = batch_usage["consumed"]
+        item["unbatched_qty"] = batch_usage["unbatched_qty"]
+
         decremented_items.append(inventory)
     
     # Step 2: Create sales record
     sale_record = {
         "store_id": store_id,
+        "cashier_id": str(sale_data.get("cashier_id")) if sale_data.get("cashier_id") else None,
+        "cashier_name": sale_data.get("cashier_name"),
         "items": items,
         "subtotal": sale_data["subtotal"],
         "tax": sale_data["tax"],
@@ -203,7 +354,7 @@ def transaction_complete_sale(db, sale_data: Dict, session) -> Dict:
                 "product_id": item["_id"],
                 "store_id": store_id,
                 "type": "low_stock",
-                "created_at": {"$gte": datetime.utcnow().replace(hour=datetime.utcnow().hour-1)},
+                "created_at": {"$gte": datetime.utcnow() - timedelta(hours=1)},
             }, session=session)
             
             if not recent_alert:

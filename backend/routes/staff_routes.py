@@ -5,6 +5,7 @@ from bson import ObjectId
 from datetime import datetime, timezone
 from werkzeug.security import generate_password_hash
 from validation import StaffSchema, validate_request
+from product_matching import store_id_values, cashier_id_values
 
 staff_bp = Blueprint("staff", __name__)
 
@@ -71,15 +72,10 @@ def get_staff():
     try:
         db       = get_db()
         store_id = request.current_user.get("store_id")
-        
-        # Convert store_id from string to ObjectId
-        try:
-            store_id_obj = ObjectId(store_id)
-        except:
-            store_id_obj = store_id
+        store_ids = store_id_values(store_id)
 
         staff = list(db.users.find(
-            {"store_id": store_id_obj, "role": "cashier"},
+            {"store_id": {"$in": store_ids}, "role": "cashier"},
             {"password_hash": 0}
         ))
         for s in staff:
@@ -90,10 +86,10 @@ def get_staff():
             if s.get("last_login"):
                 s["last_login"] = s["last_login"].isoformat()
 
-            # Get their sales count
+            # Get their sales count (sales.store_id is ObjectId; JWT store_id is string)
             s["total_sales"] = db.sales.count_documents({
-                "store_id":   store_id,
-                "cashier_id": s["id"],
+                "store_id":   {"$in": store_ids},
+                "cashier_id": {"$in": cashier_id_values(s["id"])},
             })
 
         return jsonify({"data": staff})
@@ -136,9 +132,10 @@ def get_activity():
         skip     = (page - 1) * per_page
 
         staff_id = request.args.get("staff_id")  # filter by specific staff
-        query    = {"store_id": store_id}
+        store_ids = store_id_values(store_id)
+        query    = {"store_id": {"$in": store_ids}}
         if staff_id:
-            query["user_id"] = staff_id
+            query["user_id"] = {"$in": cashier_id_values(staff_id)}
 
         total  = db.activity_log.count_documents(query)
         logs   = list(db.activity_log.find(query).sort("created_at", -1).skip(skip).limit(per_page))
@@ -159,9 +156,13 @@ def get_staff_sales(staff_id):
     try:
         db       = get_db()
         store_id = request.current_user.get("store_id")
+        store_ids = store_id_values(store_id)
 
         sales = list(db.sales.find(
-            {"store_id": store_id, "cashier_id": staff_id}
+            {
+                "store_id":   {"$in": store_ids},
+                "cashier_id": {"$in": cashier_id_values(staff_id)},
+            }
         ).sort("created_at", -1).limit(50))
 
         for s in sales:

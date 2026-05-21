@@ -77,3 +77,15 @@ export const seasonalService = {
   getSuggestions:   (region) => api.get('/seasonal/suggestions', { params: { region } }),
   getNotifications: ()       => api.get('/seasonal/notifications'),
 }
+
+export const eventService = {
+  getAll:   ()        => api.get('/events'),
+  create:   (data)    => api.post('/events', data),
+  update:   (id, d)   => api.put(`/events/${id}`, d),
+  delete:   (id)      => api.delete(`/events/${id}`),
+}
+
+export const onboardingService = {
+  getUnmatched: ()     => api.get('/onboarding/unmatched-sales'),
+  mapSales:     (data) => api.post('/onboarding/map-sales', data),
+}

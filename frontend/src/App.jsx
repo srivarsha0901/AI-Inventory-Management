@@ -16,6 +16,8 @@ import AnalyticsPage      from './pages/AnalyticsPage'
 import TransactionsPage   from './pages/TransactionsPage'
 import OnboardingGuard    from './components/ui/OnboardingGuard'
 import StaffPage          from './pages/StaffPage'
+import EventsPage         from './pages/EventsPage'
+import UnmappedSalesPage  from './pages/UnmappedSalesPage'
 
 export default function App() {
   return (
@@ -71,6 +73,16 @@ export default function App() {
           <Route path="/staff" element={
             <ProtectedRoute allowedRoles={['manager']}>
               <OnboardingGuard><StaffPage /></OnboardingGuard>
+            </ProtectedRoute>
+          } />
+          <Route path="/events" element={
+            <ProtectedRoute allowedRoles={['manager']}>
+              <OnboardingGuard><EventsPage /></OnboardingGuard>
+            </ProtectedRoute>
+          } />
+          <Route path="/unmapped-sales" element={
+            <ProtectedRoute allowedRoles={['manager']}>
+              <OnboardingGuard><UnmappedSalesPage /></OnboardingGuard>
             </ProtectedRoute>
           } />
           <Route path="/transactions" element={

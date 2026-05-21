@@ -46,7 +46,13 @@ export default function RegisterPage() {
       login(res.data.user, res.data.token)
       navigate('/onboarding', { replace: true })
     } catch (err) {
-      setError(err.response?.data?.message || 'Registration failed. Please try again.')
+      const data = err.response?.data
+      const msg = data?.message || data?.error
+      if (!err.response) {
+        setError('Cannot reach server. Start the backend (python app.py) and use the app via the Vite dev URL.')
+      } else {
+        setError(msg || 'Registration failed. Please try again.')
+      }
     } finally {
       setLoading(false)
     }

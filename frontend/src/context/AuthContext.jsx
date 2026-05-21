@@ -81,7 +81,8 @@ export function AuthProvider({ children }) {
     setRefreshing(true)
 
     try {
-      const response = await fetch('http://127.0.0.1:5000/api/auth/refresh', {
+      const apiBase = import.meta.env.VITE_API_BASE_URL || '/api'
+      const response = await fetch(`${apiBase}/auth/refresh`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

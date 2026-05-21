@@ -1,9 +1,10 @@
 import axios from 'axios'
 
+// Use relative /api in dev (Vite proxies to Flask). Override with VITE_API_BASE_URL in production.
 const api = axios.create({
-  baseURL: 'http://127.0.0.1:5000/api',
+  baseURL: import.meta.env.VITE_API_BASE_URL || '/api',
   headers: { 'Content-Type': 'application/json' },
-  timeout: 15000,
+  timeout: 120000,
 })
 
 api.interceptors.request.use((config) => {

@@ -3,6 +3,7 @@ from jwt_helper import jwt_required
 from database import get_db
 from bson import ObjectId
 from datetime import datetime, timezone
+from product_matching import store_id_values
 
 alerts_bp = Blueprint("alerts", __name__)
 
@@ -69,10 +70,13 @@ def get_alerts():
 def dismiss_alert(alert_id):
     try:
         db = get_db()
-        db.alerts.update_one(
-            {"_id": ObjectId(alert_id)},
+        store_ids = store_id_values(request.current_user.get("store_id"))
+        result = db.alerts.update_one(
+            {"_id": ObjectId(alert_id), "store_id": {"$in": store_ids}},
             {"$set": {"status": "dismissed", "updated_at": datetime.now(timezone.utc)}}
         )
+        if not result.matched_count:
+            return jsonify({"message": "Alert not found"}), 404
         return jsonify({"message": "Alert dismissed"})
     except Exception as e:
         return jsonify({"message": str(e)}), 500
@@ -82,10 +86,13 @@ def dismiss_alert(alert_id):
 def resolve_alert(alert_id):
     try:
         db = get_db()
-        db.alerts.update_one(
-            {"_id": ObjectId(alert_id)},
+        store_ids = store_id_values(request.current_user.get("store_id"))
+        result = db.alerts.update_one(
+            {"_id": ObjectId(alert_id), "store_id": {"$in": store_ids}},
             {"$set": {"status": "resolved", "updated_at": datetime.now(timezone.utc)}}
         )
+        if not result.matched_count:
+            return jsonify({"message": "Alert not found"}), 404
         return jsonify({"message": "Alert resolved"})
     except Exception as e:
         return jsonify({"message": str(e)}), 500
@@ -97,9 +104,10 @@ def dismiss_all_alerts():
     try:
         db       = get_db()
         store_id = request.current_user.get("store_id")
+        store_ids = store_id_values(store_id)
         query    = {"status": "active"}
-        if store_id:
-            query["store_id"] = store_id
+        if store_ids:
+            query["store_id"] = {"$in": store_ids}
 
         result = db.alerts.update_many(
             query,

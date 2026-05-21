@@ -14,9 +14,10 @@ const MANAGER_NAV = [
   {
     section: 'Inventory',
     items: [
-      { to: '/inventory', icon: '📦', label: 'Stock Manager' },
-      { to: '/alerts',    icon: '⚠️', label: 'Alerts' },
-      { to: '/ocr',       icon: '🧾', label: 'OCR Invoices' },
+      { to: '/inventory',      icon: '📦', label: 'Stock Manager' },
+      { to: '/unmapped-sales', icon: '❓', label: 'Unmapped Sales' },
+      { to: '/alerts',         icon: '⚠️', label: 'Alerts' },
+      { to: '/ocr',            icon: '🧾', label: 'OCR Invoices' },
     ],
   },
   {
@@ -24,6 +25,7 @@ const MANAGER_NAV = [
     items: [
       { to: '/forecast', icon: '🤖', label: 'Forecasting' },
       { to: '/reorder',  icon: '🔁', label: 'Reorder Engine' },
+      { to: '/events',   icon: '📅', label: 'Store Calendar' },
     ],
   },
   {

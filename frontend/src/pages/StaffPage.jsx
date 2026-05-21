@@ -16,7 +16,7 @@ const ACTION_ICONS = {
 }
 
 export default function StaffPage() {
-  const { data: staffData, loading: staffLoading, refetch } = useApi(staffService.getAll)
+  const { data: staffData, loading: staffLoading, refetch } = useApi(staffService.getAll, null, [])
   const { data: activityData, loading: actLoading }         = useApi(staffService.getActivity)
 
   const staff    = staffData?.data    || []
@@ -41,7 +41,8 @@ export default function StaffPage() {
       setShowForm(false)
       refetch()
     } catch (err) {
-      setError(err.response?.data?.message || 'Failed to create staff')
+      const msg = err.response?.data?.message || err.response?.data?.error || 'Failed to create staff'
+      setError(msg)
     } finally { setSaving(false) }
   }
 
@@ -53,12 +54,17 @@ export default function StaffPage() {
         <div>
           <h2 className="font-display font-bold text-[1.3rem] text-[var(--ink)]">Staff Management</h2>
           <p className="text-[0.82rem] text-[var(--muted)] mt-0.5">
-            Manage your salesmen and track their activity
+            Manage your salesmen and track their activity. Sales appear under the cashier who completed POS billing.
           </p>
         </div>
-        <Button size="md" onClick={() => setShowForm(p => !p)}>
-          {showForm ? '✕ Cancel' : '+ Add Salesman'}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button size="md" variant="ghost" onClick={() => refetch()}>
+            ↻ Refresh
+          </Button>
+          <Button size="md" onClick={() => setShowForm(p => !p)}>
+            {showForm ? '✕ Cancel' : '+ Add Salesman'}
+          </Button>
+        </div>
       </div>
 
       {/* Create form */}

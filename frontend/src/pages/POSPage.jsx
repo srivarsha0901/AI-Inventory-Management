@@ -75,14 +75,12 @@ export default function POSPage() {
         tax,
         total,
       })
+      sessionStorage.setItem('ft_sales_updated', String(Date.now()))
       setSuccess(true)
       clearCart()
       setTimeout(() => setSuccess(false), 3000)
-    } catch {
-      // If Flask is offline, still show success for demo
-      setSuccess(true)
-      clearCart()
-      setTimeout(() => setSuccess(false), 3000)
+    } catch (err) {
+      alert("Failed to process sale: " + (err.response?.data?.error || err.response?.data?.message || err.message))
     } finally {
       setPaying(false)
     }

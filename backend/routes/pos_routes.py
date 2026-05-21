@@ -7,6 +7,8 @@ from routes.staff_routes import _log
 from validation import SaleSchema, validate_request
 from transactions import TransactionManager, transaction_complete_sale
 from caching import get_cache
+from product_matching import store_id_values, cashier_id_values
+
 pos_bp = Blueprint("pos", __name__)
 
 @pos_bp.route("/products", methods=["GET"])
@@ -86,6 +88,8 @@ def create_sale():
         
         sale_data_to_process = {
             "store_id": store_id_obj,
+            "cashier_id": str(user_id) if user_id else None,
+            "cashier_name": request.current_user.get("name", "Cashier"),
             "items": validated_data["items"],
             "subtotal": validated_data["subtotal"],
             "tax": validated_data["tax"],
@@ -129,17 +133,13 @@ def get_sales():
         db       = get_db()
         store_id = request.current_user.get("store_id")
         if store_id:
-            try:
-                store_id_obj = ObjectId(store_id)
-            except:
-                store_id_obj = store_id
-
-            store_ids = [store_id]
-            if store_id_obj != store_id:
-                store_ids.append(store_id_obj)
-            query = {"store_id": {"$in": store_ids}}
+            query = {"store_id": {"$in": store_id_values(store_id)}}
         else:
             query = {}
+
+        # Cashiers only see their own sales on "My Transactions"
+        if request.current_user.get("role") == "cashier":
+            query["cashier_id"] = {"$in": cashier_id_values(request.current_user.get("sub"))}
 
         page     = int(request.args.get("page", 1))
         per_page = int(request.args.get("per_page", 20))
